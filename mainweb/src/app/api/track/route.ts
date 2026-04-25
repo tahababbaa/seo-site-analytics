@@ -11,7 +11,7 @@ export async function POST(req: Request) {
     }
 
     await pool.query(
-      \`INSERT INTO global_pageviews (domain, path, ip_hash, user_agent, referrer) VALUES ($1, $2, $3, $4, $5)\`,
+      `INSERT INTO global_pageviews (domain, path, ip_hash, user_agent, referrer) VALUES ($1, $2, $3, $4, $5)`,
       [domain, path, ip_hash, user_agent || '', referrer || '']
     );
 

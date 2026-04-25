@@ -9,14 +9,14 @@ async function getStats() {
 
   try {
     const globalViews = await pool.query(
-      \`SELECT COUNT(*) as views, COUNT(DISTINCT ip_hash) as visitors FROM global_pageviews\`
+      `SELECT COUNT(*) as views, COUNT(DISTINCT ip_hash) as visitors FROM global_pageviews`
     );
 
     const domainStats = await pool.query(
-      \`SELECT domain, COUNT(*) as views, COUNT(DISTINCT ip_hash) as visitors 
+      `SELECT domain, COUNT(*) as views, COUNT(DISTINCT ip_hash) as visitors 
        FROM global_pageviews 
        GROUP BY domain 
-       ORDER BY views DESC\`
+       ORDER BY views DESC`
     );
 
     return {
