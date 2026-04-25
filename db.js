@@ -321,9 +321,12 @@ function seed() {
     [[1,'/papaZ','Türk İfşa 😍'],[2,'/#papaZ','Türk İfşa 😍'],[3,'/#papaZ','Türk İfşa İzle 😍']]
         .forEach(([p,id,n]) => sbcInsert.run(p,id,n));
 
-    // Default admin user: admin / admin123
-    const hash = bcrypt.hashSync('admin123', 12);
-    db.prepare('INSERT OR IGNORE INTO admin_users(username,password_hash) VALUES(?,?)').run('admin', hash);
+    // Default admin user: admin / admin123 if not exists
+    const adminCount = db.prepare('SELECT COUNT(*) as c FROM admin_users').get().c;
+    if (adminCount === 0) {
+        const hash = bcrypt.hashSync('admin123', 12);
+        db.prepare('INSERT OR IGNORE INTO admin_users(username,password_hash) VALUES(?,?)').run('admin', hash);
+    }
 }
 
 module.exports = { db, init };
