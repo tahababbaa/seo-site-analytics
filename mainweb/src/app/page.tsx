@@ -4,10 +4,6 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0; // Disable static rendering
 
 async function getStats() {
-  if (!process.env.DATABASE_URL) {
-    return { global: { views: 0, visitors: 0 }, domains: [] };
-  }
-
   try {
     const globalViews = await pool.query(
       `SELECT COUNT(*) as views, COUNT(DISTINCT ip_hash) as visitors FROM global_pageviews`
