@@ -1,5 +1,7 @@
 node_modules
 .git
 .env
-data
 *.log
+data/site.db-wal
+data/site.db-shm
+.deployment-secrets.md

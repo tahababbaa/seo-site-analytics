@@ -1,7 +1,9 @@
 node_modules
-data/
 *.log
 .env
 .next/
 mainweb/node_modules
 mainweb/.next
+data/site.db-wal
+data/site.db-shm
+.deployment-secrets.md
