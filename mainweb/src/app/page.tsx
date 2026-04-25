@@ -1,5 +1,6 @@
 import pool from '@/lib/db';
 
+export const dynamic = 'force-dynamic';
 export const revalidate = 0; // Disable static rendering
 
 async function getStats() {
