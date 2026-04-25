@@ -13,7 +13,7 @@ init();
 const app  = express();
 const { trackPageView, getStats } = require('./tracker.js');
 app.use(trackPageView);
-const PORT = process.env.PORT || 3000;
+const PORT = 3000; // Force 3000 for Coolify mapping
 
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(express.json({ limit: '10mb' }));
@@ -1628,7 +1628,7 @@ function doImport(e) {
 </body></html>`;
 }
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n✓ Site çalışıyor: http://localhost:${PORT}`);
     console.log(`✓ Admin paneli: http://localhost:${PORT}/admin`);
     console.log(`  Kullanıcı: admin | Şifre: admin123\n`);
