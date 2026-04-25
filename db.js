@@ -73,6 +73,17 @@ function init() {
 
     const count = db.prepare('SELECT COUNT(*) as c FROM meta').get().c;
     if (count === 0) seed();
+
+    // Ensure FAQ is seeded
+    const faqCount = db.prepare('SELECT COUNT(*) as c FROM faq_items').get().c;
+    if (faqCount === 0) seedFaq();
+
+    // Default admin user: admin / admin123 if not exists
+    const adminCount = db.prepare('SELECT COUNT(*) as c FROM admin_users').get().c;
+    if (adminCount === 0) {
+        const hash = bcrypt.hashSync('admin123', 12);
+        db.prepare('INSERT OR IGNORE INTO admin_users(username,password_hash) VALUES(?,?)').run('admin', hash);
+    }
 }
 
 function migrateNewMeta() {
@@ -320,13 +331,6 @@ function seed() {
     const sbcInsert = db.prepare('INSERT INTO schema_breadcrumbs(position,item_id,name) VALUES(?,?,?)');
     [[1,'/papaZ','Türk İfşa 😍'],[2,'/#papaZ','Türk İfşa 😍'],[3,'/#papaZ','Türk İfşa İzle 😍']]
         .forEach(([p,id,n]) => sbcInsert.run(p,id,n));
-
-    // Default admin user: admin / admin123 if not exists
-    const adminCount = db.prepare('SELECT COUNT(*) as c FROM admin_users').get().c;
-    if (adminCount === 0) {
-        const hash = bcrypt.hashSync('admin123', 12);
-        db.prepare('INSERT OR IGNORE INTO admin_users(username,password_hash) VALUES(?,?)').run('admin', hash);
-    }
 }
 
 module.exports = { db, init };
