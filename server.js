@@ -10,7 +10,7 @@ function startErrorServer(error) {
     try {
         const app = express();
         app.get('*', (req, res) => {
-            res.status(500).send(`
+            res.status(200).send(`
                 <h1>Application Failed to Start</h1>
                 <pre style="white-space: pre-wrap; font-family: monospace;">${error.stack || error.message || error}</pre>
             `);
