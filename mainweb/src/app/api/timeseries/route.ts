@@ -1,14 +1,15 @@
 import { NextResponse } from 'next/server';
 import pool from '@/lib/db';
+import { SOURCE_CASE } from '../stats/route';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-// Returns hourly or daily buckets for human vs bot views
+// Returns hourly or daily buckets — separate series for each traffic source
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const range = (searchParams.get('range') || '30d').toLowerCase();
+    const range  = (searchParams.get('range') || '30d').toLowerCase();
     const domain = searchParams.get('domain') || '';
 
     let bucket = 'day';
@@ -27,32 +28,35 @@ export async function GET(request: Request) {
 
     const series = await pool.query(`
       SELECT
-        date_trunc('${bucket}', created_at)              AS ts,
-        COUNT(*) FILTER (WHERE is_bot = false)            AS human,
-        COUNT(*) FILTER (WHERE is_bot = true)             AS bot,
-        COUNT(*) FILTER (WHERE js_verified = true)        AS verified,
-        COUNT(DISTINCT COALESCE(session_id, ip_hash))
-                 FILTER (WHERE is_bot = false)            AS human_visitors,
-        COUNT(DISTINCT COALESCE(session_id, ip_hash))
-                 FILTER (WHERE is_bot = true)             AS bot_visitors
+        date_trunc('${bucket}', created_at)                              AS ts,
+        COUNT(*) FILTER (WHERE ${SOURCE_CASE} = 'google')                AS google,
+        COUNT(*) FILTER (WHERE ${SOURCE_CASE} = 'bing')                  AS bing,
+        COUNT(*) FILTER (WHERE ${SOURCE_CASE} = 'yandex')                AS yandex,
+        COUNT(*) FILTER (WHERE ${SOURCE_CASE} = 'search_other')          AS search_other,
+        COUNT(*) FILTER (WHERE ${SOURCE_CASE} = 'direct')                AS direct,
+        COUNT(*) FILTER (WHERE ${SOURCE_CASE} = 'social')                AS social,
+        COUNT(*) FILTER (WHERE ${SOURCE_CASE} = 'referral')              AS referral,
+        COUNT(*) FILTER (WHERE ${SOURCE_CASE} = 'bot')                   AS bot
       FROM global_pageviews
       WHERE ${where}
       GROUP BY ts
       ORDER BY ts ASC`, params);
 
-    // Fill gaps so the chart has continuous x-axis points
     const filled = fillBuckets(series.rows, bucket, interval);
 
     return NextResponse.json({
       range,
       bucket,
       points: filled.map(p => ({
-        ts:              p.ts.toISOString(),
-        human:           Number(p.human || 0),
-        bot:             Number(p.bot || 0),
-        verified:        Number(p.verified || 0),
-        human_visitors:  Number(p.human_visitors || 0),
-        bot_visitors:    Number(p.bot_visitors || 0),
+        ts:           new Date(p.ts).toISOString(),
+        google:       Number(p.google || 0),
+        bing:         Number(p.bing || 0),
+        yandex:       Number(p.yandex || 0),
+        search_other: Number(p.search_other || 0),
+        direct:       Number(p.direct || 0),
+        social:       Number(p.social || 0),
+        referral:     Number(p.referral || 0),
+        bot:          Number(p.bot || 0),
       })),
     });
   } catch (error: unknown) {
@@ -62,15 +66,14 @@ export async function GET(request: Request) {
   }
 }
 
-type Row = { ts: Date | string; human?: unknown; bot?: unknown; verified?: unknown; human_visitors?: unknown; bot_visitors?: unknown };
+type Row = { ts: Date | string; [k: string]: unknown };
 
-function fillBuckets(rows: Row[], bucket: string, interval: string) {
+function fillBuckets(rows: Row[], bucket: string, interval: string): Row[] {
   const map = new Map<string, Row>();
   for (const r of rows) {
     const d = new Date(r.ts);
     map.set(d.toISOString(), r);
   }
-
   const stepMs = bucket === 'hour' ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
   const intervalMs = parseIntervalToMs(interval);
   const now = new Date();
@@ -85,18 +88,11 @@ function fillBuckets(rows: Row[], bucket: string, interval: string) {
   for (let t = start.getTime(); t <= end.getTime(); t += stepMs) {
     const d = new Date(t);
     const key = d.toISOString();
-    const existing = map.get(key);
-    out.push(existing || { ts: d, human: 0, bot: 0, verified: 0, human_visitors: 0, bot_visitors: 0 });
+    out.push(map.get(key) || { ts: d, google:0, bing:0, yandex:0, search_other:0, direct:0, social:0, referral:0, bot:0 });
   }
-  return out.map(r => ({ ...r, ts: new Date(r.ts) }));
+  return out;
 }
-
-function startOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-
+function startOfDay(d: Date) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
 function parseIntervalToMs(s: string) {
   const m = s.match(/(\d+)\s*(hours?|days?)/);
   if (!m) return 30 * 24 * 60 * 60 * 1000;

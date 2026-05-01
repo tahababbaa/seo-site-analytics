@@ -5,30 +5,32 @@ import LineWaveChart from './components/LineWaveChart';
 
 type DomainStat = {
   domain: string;
-  views: number; visitors: number;
-  human_views: number; bot_views: number; verified_views: number;
-  human_visitors: number; bot_visitors: number;
+  total: number;
+  search_total: number; google: number; bing: number; yandex: number; search_other: number;
+  search_visitors: number;
+  direct: number; social: number; referral: number; bot: number;
 };
 type Stats = {
   global: {
-    views: number; visitors: number;
-    human_views: number; bot_views: number; verified_views: number;
-    human_visitors: number; bot_visitors: number; verified_visitors: number;
+    total: number; visitors: number;
+    search_total: number; google: number; bing: number; yandex: number; search_other: number;
+    google_visitors: number; bing_visitors: number; yandex_visitors: number;
+    direct: number; social: number; referral: number; bot: number; verified: number;
   };
   domains: DomainStat[];
 };
 type SeriesPoint = {
   ts: string;
-  human: number; bot: number; verified: number;
-  human_visitors: number; bot_visitors: number;
+  google: number; bing: number; yandex: number; search_other: number;
+  direct: number; social: number; referral: number; bot: number;
 };
 type Breakdown = {
-  topIps: { ip: string; cnt: number; bot_cnt: number; verified: boolean }[];
-  topUas: { user_agent: string; cnt: number; is_bot: boolean }[];
-  topPaths: { domain: string; path: string; cnt: number }[];
-  topReferrers: { referrer: string; cnt: number }[];
-  botReasons: { bot_reason: string; cnt: number }[];
-  hourlyHeatmap: { dow: number; hour: number; human: number; bot: number }[];
+  searchLandings:  { domain: string; path: string; source: string; cnt: number }[];
+  searchReferrers: { referrer: string; source: string; cnt: number }[];
+  otherReferrers:  { referrer: string; source: string; cnt: number }[];
+  topPaths:        { domain: string; path: string; cnt: number; search_cnt: number }[];
+  ipBreakdown:     { ip: string; cnt: number; search_cnt: number; bot_cnt: number; verified: boolean }[];
+  hourlyHeatmap:   { dow: number; hour: number; search: number; direct: number }[];
 };
 
 const RANGES = [
@@ -43,44 +45,37 @@ export default function Dashboard() {
   const [series,    setSeries]    = useState<SeriesPoint[]>([]);
   const [breakdown, setBreakdown] = useState<Breakdown | null>(null);
   const [range,     setRange]     = useState('30d');
-  const [domain,    setDomain]    = useState('');   // empty = all
+  const [domain,    setDomain]    = useState('');
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState<string | null>(null);
-  const [tab,       setTab]       = useState<'sources' | 'agents' | 'pages' | 'reasons'>('sources');
+  const [showOther, setShowOther] = useState(false);
 
-  // Load all data when range/domain changes
+  function load() {
+    const qs = new URLSearchParams({ range });
+    if (domain) qs.set('domain', domain);
+    return Promise.all([
+      fetch('/api/stats',                       { cache: 'no-store' }).then(r => r.json()),
+      fetch(`/api/timeseries?${qs.toString()}`, { cache: 'no-store' }).then(r => r.json()),
+      fetch(`/api/breakdown?${qs.toString()}`,  { cache: 'no-store' }).then(r => r.json()),
+    ]);
+  }
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true); setError(null);
-    const qs = new URLSearchParams({ range });
-    if (domain) qs.set('domain', domain);
-    Promise.all([
-      fetch('/api/stats',                          { cache: 'no-store' }).then(r => r.json()),
-      fetch(`/api/timeseries?${qs.toString()}`,    { cache: 'no-store' }).then(r => r.json()),
-      fetch(`/api/breakdown?${qs.toString()}`,     { cache: 'no-store' }).then(r => r.json()),
-    ]).then(([s, t, b]) => {
+    load().then(([s, t, b]) => {
       if (cancelled) return;
       if (s.error || t.error || b.error) {
         setError(s.error || t.error || b.error); setLoading(false); return;
       }
-      setStats(s);
-      setSeries(t.points || []);
-      setBreakdown(b);
-      setLoading(false);
+      setStats(s); setSeries(t.points || []); setBreakdown(b); setLoading(false);
     }).catch(e => { if (!cancelled) { setError(e.message); setLoading(false); } });
     return () => { cancelled = true; };
   }, [range, domain]);
 
-  // Auto-refresh every 30 seconds
   useEffect(() => {
     const id = setInterval(() => {
-      const qs = new URLSearchParams({ range });
-      if (domain) qs.set('domain', domain);
-      Promise.all([
-        fetch('/api/stats',                          { cache: 'no-store' }).then(r => r.json()),
-        fetch(`/api/timeseries?${qs.toString()}`,    { cache: 'no-store' }).then(r => r.json()),
-        fetch(`/api/breakdown?${qs.toString()}`,     { cache: 'no-store' }).then(r => r.json()),
-      ]).then(([s, t, b]) => {
+      load().then(([s, t, b]) => {
         if (s.error || t.error || b.error) return;
         setStats(s); setSeries(t.points || []); setBreakdown(b);
       }).catch(()=>{});
@@ -88,22 +83,24 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [range, domain]);
 
-  // ── Derived values ────────────────────────────────────────────────────────
+  // ── Series ─────────────────────────────────────────────────────────────
   const xLabels = useMemo(() => series.map(p => fmtTick(p.ts, range)), [series, range]);
-  const lineSeries = useMemo(() => ([
-    { label: 'Bot İstekleri',     color: '#ef4444', values: series.map(p => p.bot) },
-    { label: 'İnsan (Aday)',      color: '#06b6d4', values: series.map(p => p.human) },
-    { label: 'JS Doğrulanmış',    color: '#10b981', values: series.map(p => p.verified) },
-  ]), [series]);
-  const visitorSeries = useMemo(() => ([
-    { label: 'Bot Ziyaretçi',     color: '#f97316', values: series.map(p => p.bot_visitors) },
-    { label: 'İnsan Ziyaretçi',   color: '#a78bfa', values: series.map(p => p.human_visitors) },
+
+  // PRIMARY chart: Google / Bing / Yandex / Other search
+  const searchSeries = useMemo(() => ([
+    { label: 'Google',  color: '#4285F4', values: series.map(p => p.google) },
+    { label: 'Bing',    color: '#00A4EF', values: series.map(p => p.bing) },
+    { label: 'Yandex',  color: '#FFCC00', values: series.map(p => p.yandex) },
+    { label: 'Diğer Arama (DDG/Yahoo/Brave)', color: '#a78bfa', values: series.map(p => p.search_other) },
   ]), [series]);
 
-  const humanRatio = stats && stats.global.views > 0
-    ? Math.round((stats.global.human_views / stats.global.views) * 100) : 0;
-  const verifiedRatio = stats && stats.global.human_views > 0
-    ? Math.round((stats.global.verified_views / stats.global.human_views) * 100) : 0;
+  // SECONDARY chart: other traffic
+  const otherSeries = useMemo(() => ([
+    { label: 'Direkt',   color: '#06b6d4', values: series.map(p => p.direct) },
+    { label: 'Sosyal',   color: '#10b981', values: series.map(p => p.social) },
+    { label: 'Referans', color: '#f59e0b', values: series.map(p => p.referral) },
+    { label: 'Bot',      color: '#ef4444', values: series.map(p => p.bot) },
+  ]), [series]);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-6 md:p-8 selection:bg-cyan-500 selection:text-white">
@@ -112,16 +109,15 @@ export default function Dashboard() {
         <header className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <h1 className="text-3xl font-light tracking-tight">
-              Analytics <span className="font-bold text-cyan-400">Dashboard</span>
+              Search Engine <span className="font-bold text-cyan-400">Analytics</span>
             </h1>
             <p className="text-sm text-slate-500 mt-1">
-              Bot/İnsan ayrımıyla detaylı trafik analizi · 30 saniyede bir otomatik güncellenir
+              Birincil metrik: Google, Bing, Yandex'ten gelen organik tıklamalar · 30 sn'de bir güncellenir
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <select
-              value={domain}
-              onChange={(e) => setDomain(e.target.value)}
+              value={domain} onChange={e => setDomain(e.target.value)}
               className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-cyan-500"
             >
               <option value="">Tüm Siteler</option>
@@ -130,12 +126,10 @@ export default function Dashboard() {
             <div className="flex bg-slate-900 border border-slate-800 rounded-lg p-1">
               {RANGES.map(r => (
                 <button
-                  key={r.id}
-                  onClick={() => setRange(r.id)}
+                  key={r.id} onClick={() => setRange(r.id)}
                   className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                     range === r.id ? 'bg-cyan-500 text-slate-950' : 'text-slate-400 hover:text-white'
-                  }`}
-                >{r.label}</button>
+                  }`}>{r.label}</button>
               ))}
             </div>
           </div>
@@ -147,130 +141,149 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Stat cards */}
-        <section className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <StatCard label="Toplam İstek" value={stats?.global.views} accent="cyan"
-            sub={`${stats?.global.visitors.toLocaleString() ?? 0} tekil oturum`} loading={loading} />
-          <StatCard label="İnsan İstekleri (aday)" value={stats?.global.human_views} accent="violet"
-            sub={`${stats?.global.human_visitors.toLocaleString() ?? 0} tekil insan oturumu`} loading={loading} />
-          <StatCard label="Bot İstekleri" value={stats?.global.bot_views} accent="rose"
-            sub={`${stats?.global.bot_visitors.toLocaleString() ?? 0} bot oturumu`} loading={loading} />
-          <StatCard label="✓ JS Doğrulanmış (Kesin İnsan)" value={stats?.global.verified_views} accent="emerald"
-            sub={`${stats?.global.verified_visitors.toLocaleString() ?? 0} doğrulanmış oturum`} loading={loading} />
+        {/* PRIMARY: SEARCH ENGINE CLICKS */}
+        <section className="bg-gradient-to-br from-cyan-950/40 via-slate-900/50 to-slate-900/50 border border-cyan-500/20 rounded-2xl p-6 md:p-8 shadow-2xl">
+          <div className="flex items-center justify-between mb-2">
+            <span className="inline-block bg-cyan-500/20 text-cyan-300 text-xs font-bold tracking-wider uppercase px-3 py-1 rounded-full">
+              ⭐ Birincil Metrik · Organik Arama Tıklamaları
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mt-4">
+            <div className="md:col-span-2 bg-slate-950/50 border border-cyan-500/30 p-6 rounded-xl">
+              <p className="text-xs uppercase tracking-widest text-cyan-400 mb-2">Toplam Arama Tıklaması</p>
+              <p className="text-6xl font-light text-white">
+                {loading ? '—' : (stats?.global.search_total ?? 0).toLocaleString()}
+              </p>
+              <p className="text-sm text-slate-400 mt-2">
+                {stats ? `${(stats.global.google_visitors + stats.global.bing_visitors + stats.global.yandex_visitors).toLocaleString()} tekil ziyaretçi` : ''}
+              </p>
+            </div>
+            <SearchEngineCard label="Google"  value={stats?.global.google}       visitors={stats?.global.google_visitors}  color="#4285F4" loading={loading} />
+            <SearchEngineCard label="Bing"    value={stats?.global.bing}         visitors={stats?.global.bing_visitors}    color="#00A4EF" loading={loading} />
+            <SearchEngineCard label="Yandex"  value={stats?.global.yandex}       visitors={stats?.global.yandex_visitors}  color="#FFCC00" loading={loading} />
+          </div>
         </section>
 
-        {/* Ratio bar */}
-        {stats && stats.global.views > 0 && (
-          <section className="bg-slate-900/50 border border-slate-800 rounded-2xl p-5">
-            <div className="flex items-center justify-between mb-3 text-sm">
-              <span className="text-slate-300">Trafik Kompozisyonu (toplam {stats.global.views.toLocaleString()} istek)</span>
-              <span className="text-slate-400">
-                <span className="text-emerald-400 font-bold">%{verifiedRatio}</span> insan trafiğinin JS ile kesin doğrulandı
-              </span>
-            </div>
-            <div className="h-3 bg-slate-800 rounded-full overflow-hidden flex">
-              <div className="bg-emerald-500" style={{ width: `${pct(stats.global.verified_views, stats.global.views)}%` }} title={`Verified: ${stats.global.verified_views}`} />
-              <div className="bg-cyan-500"    style={{ width: `${pct(stats.global.human_views - stats.global.verified_views, stats.global.views)}%` }} title={`Human (unverified): ${stats.global.human_views - stats.global.verified_views}`} />
-              <div className="bg-rose-500"    style={{ width: `${pct(stats.global.bot_views, stats.global.views)}%` }} title={`Bot: ${stats.global.bot_views}`} />
-            </div>
-            <div className="flex flex-wrap gap-x-5 gap-y-1 mt-3 text-xs text-slate-400">
-              <span><span className="inline-block w-2 h-2 rounded-full bg-emerald-500 mr-2 align-middle"></span>JS Doğrulanmış (kesin insan)</span>
-              <span><span className="inline-block w-2 h-2 rounded-full bg-cyan-500 mr-2 align-middle"></span>İnsan (aday, JS kanıtsız)</span>
-              <span><span className="inline-block w-2 h-2 rounded-full bg-rose-500 mr-2 align-middle"></span>Bot</span>
-            </div>
-          </section>
-        )}
-
-        {/* Time series chart */}
+        {/* PRIMARY chart */}
         <section className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
           <header className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-medium flex items-center gap-3">
               <span className="w-8 h-[2px] bg-cyan-500 block"></span>
-              Zaman Serisi · İstekler
+              Arama Motoru Tıklamaları · Zaman Serisi
             </h2>
             <span className="text-xs text-slate-500">{rangeDescription(range)}</span>
           </header>
           {loading ? <SkeletonChart /> : (
-            series.length === 0
-              ? <EmptyState text="Bu aralıkta veri yok." />
-              : <LineWaveChart labels={xLabels} series={lineSeries} height={320} />
+            stats && stats.global.search_total === 0
+              ? <EmptyState text="Bu aralıkta arama motorundan tıklama yok. Search Console'a sitemap göndererek başlatabilirsin." />
+              : <LineWaveChart labels={xLabels} series={searchSeries} height={320} />
           )}
         </section>
 
-        {/* Visitor chart */}
-        <section className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
-          <header className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-medium flex items-center gap-3">
-              <span className="w-8 h-[2px] bg-violet-500 block"></span>
-              Zaman Serisi · Tekil Ziyaretçiler
-            </h2>
-            <span className="text-xs text-slate-500">{rangeDescription(range)}</span>
-          </header>
-          {loading ? <SkeletonChart /> : (
-            series.length === 0
-              ? <EmptyState text="Bu aralıkta veri yok." />
-              : <LineWaveChart labels={xLabels} series={visitorSeries} height={280} />
-          )}
-        </section>
-
-        {/* Domain breakdown */}
+        {/* PRIMARY: per-domain search performance */}
         <section>
           <h2 className="text-lg font-medium flex items-center gap-3 mb-4">
-            <span className="w-8 h-[2px] bg-emerald-500 block"></span>
-            Domain Dağılımı (bot / insan ayırımı)
+            <span className="w-8 h-[2px] bg-cyan-500 block"></span>
+            Domain Bazında Arama Performansı
           </h2>
           {loading ? <SkeletonGrid /> : (
             !stats || stats.domains.length === 0
               ? <EmptyState text="Henüz veri yok." />
               : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {stats.domains.map(d => <DomainCard key={d.domain} d={d} />)}
+                  {stats.domains.map(d => <DomainSearchCard key={d.domain} d={d} />)}
                 </div>
               )
           )}
         </section>
 
-        {/* Hourly Heatmap */}
+        {/* PRIMARY: top landing pages from search */}
+        <section className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
+          <h2 className="text-lg font-medium flex items-center gap-3 mb-4">
+            <span className="w-8 h-[2px] bg-cyan-500 block"></span>
+            Aramadan En Çok Tıklanan Sayfalar
+          </h2>
+          {loading || !breakdown ? <SkeletonChart /> : <SearchLandingsTable rows={breakdown.searchLandings} />}
+        </section>
+
+        {/* PRIMARY: search referer URLs */}
+        <section className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
+          <h2 className="text-lg font-medium flex items-center gap-3 mb-4">
+            <span className="w-8 h-[2px] bg-cyan-500 block"></span>
+            Tam Arama Motoru Yönlendirici URL'leri
+          </h2>
+          <p className="text-xs text-slate-500 mb-4">Bazıları sorgu kelimesini içerebilir (özellikle Yandex/Bing).</p>
+          {loading || !breakdown ? <SkeletonChart /> : <ReferrersTable rows={breakdown.searchReferrers} />}
+        </section>
+
+        {/* PRIMARY: hourly heatmap */}
         <section className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
           <h2 className="text-lg font-medium flex items-center gap-3 mb-4">
             <span className="w-8 h-[2px] bg-fuchsia-500 block"></span>
-            Saat × Gün Aktivite Isı Haritası (insan trafiği)
+            Saat × Gün Aktivite · Sadece Arama Tıklamaları
           </h2>
-          {loading || !breakdown ? <SkeletonChart /> : <Heatmap data={breakdown.hourlyHeatmap} />}
+          {loading || !breakdown ? <SkeletonChart /> : <Heatmap data={breakdown.hourlyHeatmap.map(h => ({ ...h, value: h.search }))} />}
         </section>
 
-        {/* Detail tables */}
-        <section className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
-          <header className="flex items-center justify-between mb-4 flex-wrap gap-3">
-            <h2 className="text-lg font-medium flex items-center gap-3">
-              <span className="w-8 h-[2px] bg-amber-500 block"></span>
-              Detay Tablolar
-            </h2>
-            <div className="flex bg-slate-950 border border-slate-800 rounded-lg p-1 flex-wrap">
-              {(['sources','agents','pages','reasons'] as const).map(t => (
-                <button key={t} onClick={() => setTab(t)}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                    tab === t ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'
-                  }`}>
-                  {tabLabel(t)}
-                </button>
-              ))}
+        {/* ─────────────────────────────────────────────────────────────── */}
+        {/* SECONDARY: filtered out (other traffic)                         */}
+        {/* ─────────────────────────────────────────────────────────────── */}
+        <section className="border-t border-slate-800 pt-6">
+          <button
+            onClick={() => setShowOther(!showOther)}
+            className="w-full flex items-center justify-between bg-slate-900/30 border border-slate-800 rounded-xl px-5 py-4 hover:border-slate-700 transition-colors"
+          >
+            <div className="flex items-center gap-3 text-left">
+              <span className="text-slate-500 text-2xl">{showOther ? '▾' : '▸'}</span>
+              <div>
+                <h2 className="text-base font-medium text-slate-300">Diğer Trafik (Filtrelenmiş)</h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Direkt ziyaret · Sosyal · Referans linkler · Bot taramaları — birincil rapora dahil değil
+                </p>
+              </div>
             </div>
-          </header>
-          {!breakdown
-            ? <SkeletonChart />
-            : (
-              <>
-                {tab === 'sources'  && <IpsTable rows={breakdown.topIps} />}
-                {tab === 'agents'   && <UasTable rows={breakdown.topUas} />}
-                {tab === 'pages'    && <PathsTable rows={breakdown.topPaths} refs={breakdown.topReferrers} />}
-                {tab === 'reasons'  && <ReasonsTable rows={breakdown.botReasons} />}
-              </>
+            {stats && (
+              <div className="flex gap-3 text-xs text-slate-400 flex-wrap">
+                <span><span className="text-cyan-400 font-bold">{stats.global.direct}</span> direkt</span>
+                <span><span className="text-emerald-400 font-bold">{stats.global.social}</span> sosyal</span>
+                <span><span className="text-amber-400 font-bold">{stats.global.referral}</span> referans</span>
+                <span><span className="text-rose-400 font-bold">{stats.global.bot}</span> bot</span>
+              </div>
             )}
+          </button>
+
+          {showOther && (
+            <div className="mt-4 space-y-6">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <SmallStat label="Direkt Ziyaret"     value={stats?.global.direct}   color="cyan"    desc="Referrer yok / yer imi / direkt yazma" />
+                <SmallStat label="Sosyal"             value={stats?.global.social}   color="emerald" desc="Twitter/X, Facebook, IG, Reddit, vb." />
+                <SmallStat label="Diğer Referans"     value={stats?.global.referral} color="amber"   desc="Başka sitelerden gelen linkler" />
+                <SmallStat label="Bot Taraması"       value={stats?.global.bot}      color="rose"    desc="UA pattern + header eksikliği" />
+              </div>
+
+              <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
+                <h3 className="text-base font-medium mb-3 text-slate-300">Diğer Trafik · Zaman Serisi</h3>
+                {loading ? <SkeletonChart /> : <LineWaveChart labels={xLabels} series={otherSeries} height={260} />}
+              </div>
+
+              <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
+                <h3 className="text-base font-medium mb-3 text-slate-300">Sosyal & Referans Yönlendirici URL'ler</h3>
+                {breakdown && breakdown.otherReferrers.length > 0
+                  ? <ReferrersTable rows={breakdown.otherReferrers} />
+                  : <EmptyState text="Diğer kaynaklardan kayıt yok." />}
+              </div>
+
+              <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
+                <h3 className="text-base font-medium mb-3 text-slate-300">Top IP'ler (tüm trafik)</h3>
+                {breakdown ? <IpsTable rows={breakdown.ipBreakdown} /> : <SkeletonChart />}
+              </div>
+            </div>
+          )}
         </section>
 
         <footer className="text-center text-xs text-slate-600 py-6">
-          {humanRatio}% insan oranı · 30 saniyede bir güncellenir · {new Date().toLocaleString('tr-TR')}
+          {stats ? `${stats.global.search_total} arama tıklaması · ${stats.global.total} toplam istek` : ''}
+          · {new Date().toLocaleString('tr-TR')}
         </footer>
       </div>
     </div>
@@ -283,85 +296,164 @@ function fmtTick(iso: string, range: string) {
   if (range === '24h') return d.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
   return d.toLocaleDateString('tr-TR', { day: '2-digit', month: 'short' });
 }
-function rangeDescription(r: string) {
-  if (r === '24h') return 'Saatlik bucket';
-  return 'Günlük bucket';
-}
-function pct(part: number, total: number) {
-  if (!total) return 0;
-  return Math.max(0, Math.min(100, (part / total) * 100));
-}
-function tabLabel(t: string) {
-  return ({ sources:'Top IP', agents:'User-Agent', pages:'Sayfalar & Kaynaklar', reasons:'Bot Sebepleri' } as Record<string,string>)[t] || t;
-}
+function rangeDescription(r: string) { return r === '24h' ? 'Saatlik bucket' : 'Günlük bucket'; }
 
 // ─── Components ─────────────────────────────────────────────────────────────
-function StatCard({ label, value, sub, accent, loading }: { label: string; value?: number; sub?: string; accent: 'cyan'|'violet'|'rose'|'emerald'; loading: boolean }) {
-  const colors = {
-    cyan:    'from-cyan-500/10  text-cyan-300',
-    violet:  'from-violet-500/10 text-violet-300',
-    rose:    'from-rose-500/10  text-rose-300',
-    emerald: 'from-emerald-500/10 text-emerald-300',
-  } as const;
+function SearchEngineCard({ label, value, visitors, color, loading }: { label: string; value?: number; visitors?: number; color: string; loading: boolean }) {
   return (
-    <div className={`bg-slate-900/50 backdrop-blur-xl border border-slate-800 p-5 rounded-2xl relative overflow-hidden bg-gradient-to-br ${colors[accent].split(' ')[0]} to-transparent`}>
-      <h3 className="text-xs uppercase tracking-widest text-slate-400 mb-2 font-semibold">{label}</h3>
-      <p className={`text-4xl font-light ${colors[accent].split(' ')[1]}`}>
-        {loading ? '—' : (value ?? 0).toLocaleString()}
-      </p>
-      {sub && <p className="text-xs text-slate-500 mt-2">{sub}</p>}
+    <div className="bg-slate-950/50 border border-slate-800 p-5 rounded-xl">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: color }}></span>
+        <p className="text-xs uppercase tracking-widest text-slate-400 font-semibold">{label}</p>
+      </div>
+      <p className="text-3xl font-light text-white">{loading ? '—' : (value ?? 0).toLocaleString()}</p>
+      <p className="text-xs text-slate-500 mt-1">{visitors !== undefined ? `${visitors} ziyaretçi` : ''}</p>
     </div>
   );
 }
 
-function DomainCard({ d }: { d: DomainStat }) {
-  const total = d.views || 1;
-  const humanPct = (d.human_views / total) * 100;
-  const botPct   = (d.bot_views / total) * 100;
-  const verPct   = (d.verified_views / total) * 100;
+function SmallStat({ label, value, desc, color }: { label: string; value?: number; desc?: string; color: 'cyan'|'emerald'|'amber'|'rose' }) {
+  const colorMap = { cyan:'text-cyan-300', emerald:'text-emerald-300', amber:'text-amber-300', rose:'text-rose-300' } as const;
+  return (
+    <div className="bg-slate-900/50 border border-slate-800 p-4 rounded-xl">
+      <p className="text-xs uppercase tracking-widest text-slate-500 mb-1">{label}</p>
+      <p className={`text-2xl font-light ${colorMap[color]}`}>{(value ?? 0).toLocaleString()}</p>
+      {desc && <p className="text-[11px] text-slate-600 mt-1 leading-tight">{desc}</p>}
+    </div>
+  );
+}
+
+function DomainSearchCard({ d }: { d: DomainStat }) {
+  const search = d.search_total || 0;
+  const max = Math.max(d.google, d.bing, d.yandex, d.search_other, 1);
   return (
     <div className="bg-slate-900 border border-slate-800/50 p-5 rounded-xl hover:border-cyan-500/40 transition-colors">
       <div className="flex justify-between items-baseline mb-3">
         <h3 className="text-base font-semibold text-white truncate">{d.domain}</h3>
-        <span className="text-xs text-slate-500">{d.views.toLocaleString()} istek</span>
+        <span className="text-xs text-slate-500">{search} arama / {d.total} toplam</span>
       </div>
-      <div className="h-2 bg-slate-800 rounded-full overflow-hidden flex mb-3">
-        <div className="bg-emerald-500" style={{ width: `${verPct}%` }} />
-        <div className="bg-cyan-500"    style={{ width: `${humanPct - verPct}%` }} />
-        <div className="bg-rose-500"    style={{ width: `${botPct}%` }} />
+      <div className="space-y-2 mb-3">
+        <Bar label="Google"  value={d.google}       max={max} color="#4285F4" />
+        <Bar label="Bing"    value={d.bing}         max={max} color="#00A4EF" />
+        <Bar label="Yandex"  value={d.yandex}       max={max} color="#FFCC00" />
+        <Bar label="Diğer"   value={d.search_other} max={max} color="#a78bfa" />
       </div>
-      <div className="grid grid-cols-3 gap-2 text-xs">
-        <div>
-          <p className="text-slate-500">İnsan</p>
-          <p className="text-cyan-300 font-semibold text-base">{d.human_views.toLocaleString()}</p>
-          <p className="text-slate-600">{d.human_visitors} oturum</p>
-        </div>
-        <div>
-          <p className="text-slate-500">Bot</p>
-          <p className="text-rose-300 font-semibold text-base">{d.bot_views.toLocaleString()}</p>
-          <p className="text-slate-600">{d.bot_visitors} oturum</p>
-        </div>
-        <div>
-          <p className="text-slate-500">✓ JS Doğr.</p>
-          <p className="text-emerald-300 font-semibold text-base">{d.verified_views.toLocaleString()}</p>
-          <p className="text-slate-600">{Math.round(verPct)}%</p>
-        </div>
+      <div className="flex justify-between text-[11px] text-slate-500 pt-2 border-t border-slate-800">
+        <span>{d.search_visitors} arama ziyaretçisi</span>
+        <span className="text-rose-400">{d.bot} bot</span>
       </div>
     </div>
   );
 }
 
-function Heatmap({ data }: { data: Breakdown['hourlyHeatmap'] }) {
+function Bar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
+  return (
+    <div>
+      <div className="flex justify-between text-xs text-slate-400 mb-1">
+        <span>{label}</span><span className="font-mono">{value}</span>
+      </div>
+      <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+        <div className="h-full rounded-full transition-all" style={{ width: `${(value/max)*100}%`, background: color }}></div>
+      </div>
+    </div>
+  );
+}
+
+function SearchLandingsTable({ rows }: { rows: Breakdown['searchLandings'] }) {
+  if (!rows.length) return <EmptyState text="Aramadan henüz tıklama yok." />;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="text-left text-xs text-slate-500 uppercase tracking-wider">
+          <tr><th className="py-2">Domain</th><th>Sayfa</th><th>Kaynak</th><th className="text-right">Tıklama</th></tr>
+        </thead>
+        <tbody className="divide-y divide-slate-800">
+          {rows.map((r,i) => (
+            <tr key={i} className="hover:bg-slate-800/30">
+              <td className="py-2 text-cyan-400 font-mono text-xs">{r.domain}</td>
+              <td className="py-2 text-xs text-slate-300 font-mono truncate max-w-md">{r.path}</td>
+              <td className="py-2"><SourceBadge source={r.source} /></td>
+              <td className="py-2 text-right font-semibold">{r.cnt.toLocaleString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ReferrersTable({ rows }: { rows: { referrer: string; source: string; cnt: number }[] }) {
+  if (!rows.length) return <EmptyState text="Veri yok." />;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="text-left text-xs text-slate-500 uppercase tracking-wider">
+          <tr><th className="py-2">Yönlendirici URL</th><th>Kaynak</th><th className="text-right">Sayı</th></tr>
+        </thead>
+        <tbody className="divide-y divide-slate-800">
+          {rows.map((r,i) => (
+            <tr key={i} className="hover:bg-slate-800/30">
+              <td className="py-2 text-xs text-slate-300 font-mono truncate max-w-2xl" title={r.referrer}>{r.referrer}</td>
+              <td className="py-2"><SourceBadge source={r.source} /></td>
+              <td className="py-2 text-right font-semibold">{r.cnt.toLocaleString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function IpsTable({ rows }: { rows: Breakdown['ipBreakdown'] }) {
+  if (!rows.length) return <EmptyState text="Veri yok." />;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="text-left text-xs text-slate-500 uppercase tracking-wider">
+          <tr>
+            <th className="py-2">IP / Hash</th>
+            <th className="text-right">Toplam</th>
+            <th className="text-right">Aramadan</th>
+            <th className="text-right">Bot</th>
+            <th>Etiket</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-800">
+          {rows.map((r,i)=>{
+            const pureBot = r.bot_cnt > 0 && r.bot_cnt === r.cnt;
+            const fromSearch = r.search_cnt > 0;
+            return (
+              <tr key={i} className="hover:bg-slate-800/30">
+                <td className="py-2 font-mono text-xs text-slate-200">{r.ip}</td>
+                <td className="text-right font-semibold">{r.cnt.toLocaleString()}</td>
+                <td className="text-right text-cyan-300">{r.search_cnt.toLocaleString()}</td>
+                <td className="text-right text-rose-400">{r.bot_cnt.toLocaleString()}</td>
+                <td>
+                  {r.verified   ? <Badge color="emerald" text="✓ İNSAN (JS)" /> :
+                   fromSearch   ? <Badge color="cyan"    text="ARAMA TIKLAMASI" /> :
+                   pureBot      ? <Badge color="rose"    text="🤖 BOT" /> :
+                                  <Badge color="amber"   text="DİĞER" />}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Heatmap({ data }: { data: { dow: number; hour: number; value: number }[] }) {
   const grid: number[][] = Array.from({ length: 7 }, () => new Array(24).fill(0));
   let max = 0;
   for (const c of data) {
     if (c.dow >= 0 && c.dow < 7 && c.hour >= 0 && c.hour < 24) {
-      grid[c.dow][c.hour] = c.human;
-      if (c.human > max) max = c.human;
+      grid[c.dow][c.hour] = c.value;
+      if (c.value > max) max = c.value;
     }
   }
   const dayNames = ['Paz','Pzt','Sal','Çar','Per','Cum','Cts'];
-  if (max === 0) return <EmptyState text="Henüz insan trafiği yok." />;
+  if (max === 0) return <EmptyState text="Aramadan tıklama yok." />;
   return (
     <div className="overflow-x-auto">
       <table className="border-separate" style={{ borderSpacing: '3px' }}>
@@ -380,10 +472,9 @@ function Heatmap({ data }: { data: Breakdown['hourlyHeatmap'] }) {
               {row.map((v, h) => {
                 const intensity = Math.sqrt(v / max);
                 return (
-                  <td key={h}
-                      title={`${dayNames[dow]} ${h}:00 · ${v} istek`}
+                  <td key={h} title={`${dayNames[dow]} ${h}:00 · ${v} tıklama`}
                       style={{
-                        background: v ? `rgba(217, 70, 239, ${0.12 + intensity * 0.8})` : 'rgba(30, 41, 59, 0.6)',
+                        background: v ? `rgba(6, 182, 212, ${0.12 + intensity * 0.8})` : 'rgba(30, 41, 59, 0.6)',
                         width: 22, height: 22, borderRadius: 4,
                       }} />
                 );
@@ -395,125 +486,30 @@ function Heatmap({ data }: { data: Breakdown['hourlyHeatmap'] }) {
       <div className="flex items-center gap-2 mt-3 text-xs text-slate-500">
         <span>Az</span>
         {Array.from({length:6},(_,i)=>(
-          <span key={i} style={{ width: 16, height: 16, borderRadius: 4, background: `rgba(217, 70, 239, ${0.12 + (i/5) * 0.8})` }} />
+          <span key={i} style={{ width: 16, height: 16, borderRadius: 4, background: `rgba(6, 182, 212, ${0.12 + (i/5) * 0.8})` }} />
         ))}
-        <span>Çok ({max} istek/saat)</span>
+        <span>Çok ({max} tıklama/saat)</span>
       </div>
     </div>
   );
 }
 
-function IpsTable({ rows }: { rows: Breakdown['topIps'] }) {
-  if (!rows.length) return <EmptyState text="Veri yok." />;
+function SourceBadge({ source }: { source: string }) {
+  const map: Record<string, { color: string; bg: string; label: string }> = {
+    google:       { color: '#4285F4', bg: 'rgba(66, 133, 244, 0.15)', label: 'Google' },
+    bing:         { color: '#00A4EF', bg: 'rgba(0, 164, 239, 0.15)',  label: 'Bing'   },
+    yandex:       { color: '#FFCC00', bg: 'rgba(255, 204, 0, 0.15)',  label: 'Yandex' },
+    search_other: { color: '#a78bfa', bg: 'rgba(167, 139, 250, 0.15)', label: 'Diğer Arama' },
+    direct:       { color: '#06b6d4', bg: 'rgba(6, 182, 212, 0.15)',   label: 'Direkt' },
+    social:       { color: '#10b981', bg: 'rgba(16, 185, 129, 0.15)',  label: 'Sosyal' },
+    referral:     { color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.15)',  label: 'Referans' },
+    bot:          { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.15)',   label: 'Bot' },
+  };
+  const m = map[source] || { color:'#94a3b8', bg:'rgba(148,163,184,0.15)', label: source };
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead className="text-left text-xs text-slate-500 uppercase tracking-wider">
-          <tr><th className="py-2">IP / Hash</th><th className="text-right">Toplam</th><th className="text-right">Bot</th><th>Etiket</th></tr>
-        </thead>
-        <tbody className="divide-y divide-slate-800">
-          {rows.map((r,i)=>{
-            const onlyBot = r.bot_cnt > 0 && r.bot_cnt === r.cnt;
-            const mixed   = r.bot_cnt > 0 && r.bot_cnt < r.cnt;
-            return (
-              <tr key={i} className="hover:bg-slate-800/30">
-                <td className="py-2 font-mono text-xs text-slate-200">{r.ip}</td>
-                <td className="text-right font-semibold">{r.cnt.toLocaleString()}</td>
-                <td className="text-right text-rose-400">{r.bot_cnt.toLocaleString()}</td>
-                <td>
-                  {r.verified ? <Badge color="emerald" text="✓ İNSAN (JS doğr.)" />
-                  : onlyBot ? <Badge color="rose" text="🤖 BOT" />
-                  : mixed   ? <Badge color="amber" text="KARIŞIK" />
-                  :           <Badge color="cyan" text="İNSAN (aday)" />}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function UasTable({ rows }: { rows: Breakdown['topUas'] }) {
-  if (!rows.length) return <EmptyState text="Veri yok." />;
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead className="text-left text-xs text-slate-500 uppercase tracking-wider">
-          <tr><th className="py-2">User-Agent</th><th className="text-right">Sayı</th><th>Etiket</th></tr>
-        </thead>
-        <tbody className="divide-y divide-slate-800">
-          {rows.map((r,i)=>(
-            <tr key={i} className="hover:bg-slate-800/30">
-              <td className="py-2 font-mono text-xs text-slate-300 max-w-2xl truncate" title={r.user_agent}>{r.user_agent}</td>
-              <td className="text-right font-semibold">{r.cnt.toLocaleString()}</td>
-              <td>{r.is_bot ? <Badge color="rose" text="🤖 BOT" /> : <Badge color="emerald" text="İNSAN" />}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function PathsTable({ rows, refs }: { rows: Breakdown['topPaths']; refs: Breakdown['topReferrers'] }) {
-  return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-      <div>
-        <h3 className="text-sm text-slate-400 mb-2 uppercase tracking-wider">En Çok Ziyaret Edilen (insan)</h3>
-        {rows.length === 0 ? <EmptyState text="Veri yok." /> : (
-          <table className="w-full text-sm">
-            <tbody className="divide-y divide-slate-800">
-              {rows.map((r,i)=>(
-                <tr key={i} className="hover:bg-slate-800/30">
-                  <td className="py-2 text-xs text-cyan-400 font-mono">{r.domain}</td>
-                  <td className="py-2 text-xs text-slate-300 font-mono truncate max-w-xs">{r.path}</td>
-                  <td className="py-2 text-right font-semibold">{r.cnt.toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-      <div>
-        <h3 className="text-sm text-slate-400 mb-2 uppercase tracking-wider">Yönlendiren Kaynaklar</h3>
-        {refs.length === 0 ? <EmptyState text="Doğrudan ziyaret veya veri yok." /> : (
-          <table className="w-full text-sm">
-            <tbody className="divide-y divide-slate-800">
-              {refs.map((r,i)=>(
-                <tr key={i} className="hover:bg-slate-800/30">
-                  <td className="py-2 text-xs text-slate-300 font-mono truncate max-w-md" title={r.referrer}>{r.referrer}</td>
-                  <td className="py-2 text-right font-semibold">{r.cnt.toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ReasonsTable({ rows }: { rows: Breakdown['botReasons'] }) {
-  if (!rows.length) return <EmptyState text="Bot algılanmadı." />;
-  return (
-    <div>
-      <p className="text-sm text-slate-400 mb-3">Botların hangi kurala takıldığının dağılımı:</p>
-      <table className="w-full text-sm">
-        <thead className="text-left text-xs text-slate-500 uppercase tracking-wider">
-          <tr><th className="py-2">Tespit Sebebi</th><th className="text-right">Sayı</th></tr>
-        </thead>
-        <tbody className="divide-y divide-slate-800">
-          {rows.map((r,i)=>(
-            <tr key={i}>
-              <td className="py-2"><code className="bg-rose-500/10 text-rose-300 px-2 py-1 rounded text-xs">{r.bot_reason}</code></td>
-              <td className="text-right font-semibold text-rose-300">{r.cnt.toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <span className="inline-block px-2 py-0.5 text-xs rounded font-semibold" style={{ color: m.color, background: m.bg }}>
+      {m.label}
+    </span>
   );
 }
 
@@ -538,7 +534,7 @@ function SkeletonGrid() {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
       {Array.from({length:5}).map((_,i)=>(
-        <div key={i} className="h-36 bg-slate-800/40 rounded-xl animate-pulse" />
+        <div key={i} className="h-44 bg-slate-800/40 rounded-xl animate-pulse" />
       ))}
     </div>
   );
