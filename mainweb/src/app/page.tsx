@@ -326,11 +326,17 @@ function SmallStat({ label, value, desc, color }: { label: string; value?: numbe
 function DomainSearchCard({ d }: { d: DomainStat }) {
   const search = d.search_total || 0;
   const max = Math.max(d.google, d.bing, d.yandex, d.search_other, 1);
+  const url = d.domain.startsWith('http') ? d.domain : `https://${d.domain}`;
   return (
     <div className="bg-slate-900 border border-slate-800/50 p-5 rounded-xl hover:border-cyan-500/40 transition-colors">
-      <div className="flex justify-between items-baseline mb-3">
-        <h3 className="text-base font-semibold text-white truncate">{d.domain}</h3>
-        <span className="text-xs text-slate-500">{search} arama / {d.total} toplam</span>
+      <div className="flex justify-between items-baseline mb-3 gap-3">
+        <a href={url} target="_blank" rel="noopener noreferrer"
+           className="text-base font-semibold text-white truncate hover:text-cyan-400 transition-colors flex items-center gap-1.5 group"
+           title={`${d.domain} adresini yeni sekmede aç`}>
+          <span className="truncate">{d.domain}</span>
+          <span className="text-cyan-500/60 group-hover:text-cyan-400 text-xs flex-shrink-0">↗</span>
+        </a>
+        <span className="text-xs text-slate-500 flex-shrink-0">{search} arama / {d.total} toplam</span>
       </div>
       <div className="space-y-2 mb-3">
         <Bar label="Google"  value={d.google}       max={max} color="#4285F4" />
@@ -368,14 +374,27 @@ function SearchLandingsTable({ rows }: { rows: Breakdown['searchLandings'] }) {
           <tr><th className="py-2">Domain</th><th>Sayfa</th><th>Kaynak</th><th className="text-right">Tıklama</th></tr>
         </thead>
         <tbody className="divide-y divide-slate-800">
-          {rows.map((r,i) => (
-            <tr key={i} className="hover:bg-slate-800/30">
-              <td className="py-2 text-cyan-400 font-mono text-xs">{r.domain}</td>
-              <td className="py-2 text-xs text-slate-300 font-mono truncate max-w-md">{r.path}</td>
-              <td className="py-2"><SourceBadge source={r.source} /></td>
-              <td className="py-2 text-right font-semibold">{r.cnt.toLocaleString()}</td>
-            </tr>
-          ))}
+          {rows.map((r,i) => {
+            const fullUrl = `https://${r.domain}${r.path}`;
+            return (
+              <tr key={i} className="hover:bg-slate-800/30">
+                <td className="py-2">
+                  <a href={`https://${r.domain}`} target="_blank" rel="noopener noreferrer"
+                     className="text-cyan-400 font-mono text-xs hover:text-cyan-300 hover:underline">
+                    {r.domain} ↗
+                  </a>
+                </td>
+                <td className="py-2 text-xs">
+                  <a href={fullUrl} target="_blank" rel="noopener noreferrer"
+                     className="text-slate-300 font-mono truncate max-w-md inline-block hover:text-white hover:underline" title={fullUrl}>
+                    {r.path}
+                  </a>
+                </td>
+                <td className="py-2"><SourceBadge source={r.source} /></td>
+                <td className="py-2 text-right font-semibold">{r.cnt.toLocaleString()}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
