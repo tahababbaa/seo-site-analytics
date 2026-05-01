@@ -2,7 +2,8 @@ const express   = require('express');
 const session   = require('express-session');
 const bcrypt    = require('bcryptjs');
 const multer    = require('multer');
-const { db, init } = require('./db.js');
+const morgan    = require('morgan');
+const { db, init, resetTracking } = require('./db.js');
 const fs        = require('fs');
 const path      = require('path');
 
@@ -11,9 +12,27 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 init();
 
 const app  = express();
-const { trackPageView, getStats } = require('./tracker.js');
+
+// Trust Coolify/Traefik/Cloudflare proxy chain so we can read the real client IP
+app.set('trust proxy', true);
+
+// ── morgan: human-readable access log written to data/access.log ─────────────
+const LOG_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+const accessLogStream = fs.createWriteStream(path.join(LOG_DIR, 'access.log'), { flags: 'a' });
+morgan.token('real-ip', (req) =>
+    req.headers['cf-connecting-ip'] ||
+    req.headers['x-real-ip'] ||
+    (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
+    req.ip || '-');
+app.use(morgan(':real-ip - [:date[iso]] ":method :url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent" :response-time', { stream: accessLogStream }));
+
+const { trackPageView, getStats, jsVerify, getLocalStats, resetAll } = require('./tracker.js');
 app.use(trackPageView);
 const PORT = 3000; // Force 3000 for Coolify mapping
+
+// JS verification beacon — fired from each rendered page; proves JS execution
+app.get('/__track', jsVerify);
 
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(express.json({ limit: '10mb' }));
@@ -354,6 +373,23 @@ ${m.cf_beacon_src ? `  <script defer src="${esc(m.cf_beacon_src)}" integrity="${
       btn.setAttribute('aria-expanded', !expanded);
       if (expanded) { panel.hidden = true; } else { panel.hidden = false; }
     }
+    // JS verification beacon — proves a real browser executed JavaScript
+    (function(){
+      try {
+        var fired = false;
+        function fire(){
+          if (fired) return; fired = true;
+          var i = new Image();
+          i.src = '/__track?t=' + Date.now();
+        }
+        if (document.readyState === 'complete') { setTimeout(fire, 800); }
+        else { window.addEventListener('load', function(){ setTimeout(fire, 800); }); }
+        // Also fire on first interaction (proves real user)
+        ['mousemove','scroll','keydown','touchstart'].forEach(function(ev){
+          window.addEventListener(ev, fire, { once: true, passive: true });
+        });
+      } catch(e){}
+    })();
   </script>
 </body></html>`;
 
@@ -644,6 +680,26 @@ app.get('/admin/api/stats', requireAdmin, async (req, res) => {
     const stats = await getStats(domain, range);
     if (stats.error) return res.json({ ok: false, error: stats.error });
     res.json({ ok: true, stats });
+});
+
+// ─── Detailed local traffic (per-site, with bot/human breakdown) ─────────────
+app.get('/admin/api/traffic', requireAdmin, (req, res) => {
+    try {
+        const range = req.query.range || 'all';
+        res.json({ ok: true, data: getLocalStats(range) });
+    } catch (e) {
+        res.json({ ok: false, error: e.message });
+    }
+});
+
+// ─── Reset all tracking data (local SQLite + global PostgreSQL) ──────────────
+app.post('/admin/api/reset-traffic', requireAdmin, async (req, res) => {
+    try {
+        await resetAll();
+        res.json({ ok: true });
+    } catch (e) {
+        res.json({ ok: false, error: e.message });
+    }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1008,6 +1064,7 @@ small{color:var(--muted);font-size:12px;display:block;margin-top:4px}
   <button class="tab-btn" data-tab="keyword">Anahtar Kelime</button>
   <button class="tab-btn" data-tab="database">Veritabanı</button>
   <button class="tab-btn" data-tab="stats">İstatistikler</button>
+  <button class="tab-btn" data-tab="traffic">Trafik & Bot Analizi</button>
 </div>
 
 <!-- META TAB -->
@@ -1415,6 +1472,28 @@ small{color:var(--muted);font-size:12px;display:block;margin-top:4px}
 </div>
 </div>
 
+<!-- TRAFFIC TAB -->
+<div id="tab-traffic" class="tab-panel">
+<div class="card">
+  <h2>Trafik & Bot Analizi</h2>
+  <p style="color:var(--muted);font-size:13px;margin-bottom:18px">
+    Her isteği IP, User-Agent, Accept header'ları ile birlikte yakalar; bot/insan tespitini
+    çok katmanlı yapar (UA pattern + header eksikliği) ve gerçek tarayıcı için
+    <strong>JS verification beacon</strong> ile doğrular. Veriler hem yerel SQLite'a hem de
+    PostgreSQL üzerinden merkezi dashboard'a yazılır.
+  </p>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px">
+    <button class="btn btn-accent" onclick="loadTraffic('all')">Tümü</button>
+    <button class="btn btn-accent" onclick="loadTraffic('today')">Bugün</button>
+    <button class="btn btn-accent" onclick="loadTraffic('week')">Bu Hafta</button>
+    <button class="btn btn-accent" onclick="loadTraffic('month')">Bu Ay</button>
+    <button class="btn btn-accent" onclick="loadTraffic('all')" style="margin-left:auto">↻ Yenile</button>
+    <button class="btn btn-danger" onclick="resetTraffic()" style="background:#c62828">⚠ Tüm Verileri Sıfırla</button>
+  </div>
+  <div id="traffic-container">Yükleniyor...</div>
+</div>
+</div>
+
 </div>
 <script>
 function loadStats(range = 'today') {
@@ -1470,6 +1549,133 @@ document.addEventListener('DOMContentLoaded', () => {
   // load initial stats
   loadStats('today');
 });
+
+// ── TRAFFIC & BOT ANALYSIS ───────────────────────────────────────────────────
+function escHtml(s){ return String(s||'').replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;' }[c])); }
+function fmtTs(s){ if(!s) return '-'; return s.replace('T',' ').slice(0,19); }
+
+function loadTraffic(range = 'all') {
+  const c = document.getElementById('traffic-container');
+  c.innerHTML = '<span style="color:var(--muted)">Yükleniyor...</span>';
+  fetch('/admin/api/traffic?range=' + range)
+    .then(r => r.json())
+    .then(d => {
+      if (!d.ok) { c.innerHTML = '<span style="color:red">' + (d.error||'Hata') + '</span>'; return; }
+      const x = d.data;
+      const card = (label, val, sub, color) =>
+        \`<div style="background:#fafafa;padding:18px;border-radius:10px;border:1px solid #eee;text-align:center">
+           <h3 style="margin:0;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:1px">\${label}</h3>
+           <p style="font-size:30px;font-weight:bold;color:\${color||'var(--primary)'};margin:8px 0 4px">\${val||0}</p>
+           <small style="color:var(--muted)">\${sub||''}</small>
+         </div>\`;
+
+      let html = '<h3 style="margin-top:0">İstekler (Page Views)</h3>';
+      html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px">' +
+        card('Toplam İstek', x.requests.total, 'Tüm HTTP istekleri') +
+        card('Bot İstekleri', x.requests.bot, 'UA/header analizine göre', '#c62828') +
+        card('İnsan (Aday)', x.requests.human, 'Bot olmayan istekler', '#2e7d32') +
+        card('JS Doğrulanmış', x.requests.verified, 'Beacon yanıtı geldi (kesin insan)', '#1565c0') +
+        '</div>';
+
+      html += '<h3>Ziyaretçiler (Tekil Oturum)</h3>';
+      html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px">' +
+        card('Toplam Oturum', x.visitors.total, 'Tekil cookie session_id') +
+        card('Bot Oturum', x.visitors.bot, '', '#c62828') +
+        card('İnsan (Aday)', x.visitors.human, '', '#2e7d32') +
+        card('JS Doğrulanmış', x.visitors.verified, 'Gerçek tarayıcı kanıtlandı', '#1565c0') +
+        '</div>';
+
+      // Bot Reasons
+      html += '<div class="grid-2"><div><h3>Bot Tespit Sebepleri</h3>';
+      if (x.botReasons && x.botReasons.length) {
+        html += '<table style="width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left;border-bottom:2px solid #eee;padding:8px">Sebep</th><th style="text-align:right;border-bottom:2px solid #eee;padding:8px">Sayı</th></tr></thead><tbody>';
+        x.botReasons.forEach(r => {
+          html += \`<tr><td style="padding:6px 8px;border-bottom:1px solid #f5f5f5"><code style="background:#fff0f0;color:#c62828;padding:2px 6px;border-radius:4px">\${escHtml(r.bot_reason||'?')}</code></td><td style="text-align:right;padding:6px 8px;border-bottom:1px solid #f5f5f5"><strong>\${r.cnt}</strong></td></tr>\`;
+        });
+        html += '</tbody></table>';
+      } else html += '<p style="color:var(--muted)">Henüz bot algılanmadı.</p>';
+      html += '</div>';
+
+      // Top Paths
+      html += '<div><h3>En Çok Ziyaret Edilen Sayfalar (insan)</h3>';
+      if (x.topPaths && x.topPaths.length) {
+        html += '<table style="width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left;border-bottom:2px solid #eee;padding:8px">Path</th><th style="text-align:right;border-bottom:2px solid #eee;padding:8px">Görüntülenme</th></tr></thead><tbody>';
+        x.topPaths.forEach(p => html += \`<tr><td style="padding:6px 8px;border-bottom:1px solid #f5f5f5;font-family:monospace;word-break:break-all">\${escHtml(p.path)}</td><td style="text-align:right;padding:6px 8px;border-bottom:1px solid #f5f5f5"><strong>\${p.cnt}</strong></td></tr>\`);
+        html += '</tbody></table>';
+      } else html += '<p style="color:var(--muted)">Veri yok.</p>';
+      html += '</div></div>';
+
+      // Top IPs
+      html += '<h3 style="margin-top:24px">En Çok İstek Atan IP\\'ler</h3>';
+      if (x.topIps && x.topIps.length) {
+        html += '<table style="width:100%;border-collapse:collapse;margin-bottom:24px"><thead><tr>' +
+          '<th style="text-align:left;border-bottom:2px solid #eee;padding:8px">IP</th>' +
+          '<th style="text-align:right;border-bottom:2px solid #eee;padding:8px">İstek</th>' +
+          '<th style="text-align:right;border-bottom:2px solid #eee;padding:8px">Bot</th>' +
+          '<th style="text-align:center;border-bottom:2px solid #eee;padding:8px">Tip</th>' +
+          '</tr></thead><tbody>';
+        x.topIps.forEach(ip => {
+          const isBot = ip.bot_cnt > 0 && ip.bot_cnt === ip.cnt;
+          const isMixed = ip.bot_cnt > 0 && ip.bot_cnt < ip.cnt;
+          const tag = ip.verified ? '<span style="background:#e8f5e9;color:#2e7d32;padding:3px 8px;border-radius:4px;font-size:11px">✓ İNSAN (JS doğr.)</span>'
+                    : isBot ? '<span style="background:#ffebee;color:#c62828;padding:3px 8px;border-radius:4px;font-size:11px">🤖 BOT</span>'
+                    : isMixed ? '<span style="background:#fff8e1;color:#f57f17;padding:3px 8px;border-radius:4px;font-size:11px">KARIŞIK</span>'
+                    : '<span style="background:#e3f2fd;color:#1565c0;padding:3px 8px;border-radius:4px;font-size:11px">İNSAN (aday)</span>';
+          html += \`<tr><td style="padding:6px 8px;border-bottom:1px solid #f5f5f5;font-family:monospace">\${escHtml(ip.ip)}</td><td style="text-align:right;padding:6px 8px;border-bottom:1px solid #f5f5f5"><strong>\${ip.cnt}</strong></td><td style="text-align:right;padding:6px 8px;border-bottom:1px solid #f5f5f5;color:#c62828">\${ip.bot_cnt||0}</td><td style="text-align:center;padding:6px 8px;border-bottom:1px solid #f5f5f5">\${tag}</td></tr>\`;
+        });
+        html += '</tbody></table>';
+      } else html += '<p style="color:var(--muted)">Veri yok.</p>';
+
+      // Top UAs
+      html += '<h3>En Çok Görülen User-Agent\\'ler</h3>';
+      if (x.topUas && x.topUas.length) {
+        html += '<table style="width:100%;border-collapse:collapse;margin-bottom:24px"><thead><tr>' +
+          '<th style="text-align:left;border-bottom:2px solid #eee;padding:8px">User-Agent</th>' +
+          '<th style="text-align:right;border-bottom:2px solid #eee;padding:8px">Sayı</th>' +
+          '<th style="text-align:center;border-bottom:2px solid #eee;padding:8px">Tip</th>' +
+          '</tr></thead><tbody>';
+        x.topUas.forEach(u => {
+          const tag = u.is_bot ? '<span style="background:#ffebee;color:#c62828;padding:3px 8px;border-radius:4px;font-size:11px">🤖 BOT</span>' : '<span style="background:#e8f5e9;color:#2e7d32;padding:3px 8px;border-radius:4px;font-size:11px">İNSAN</span>';
+          html += \`<tr><td style="padding:6px 8px;border-bottom:1px solid #f5f5f5;font-family:monospace;font-size:12px;word-break:break-all">\${escHtml(u.user_agent)}</td><td style="text-align:right;padding:6px 8px;border-bottom:1px solid #f5f5f5"><strong>\${u.cnt}</strong></td><td style="text-align:center;padding:6px 8px;border-bottom:1px solid #f5f5f5">\${tag}</td></tr>\`;
+        });
+        html += '</tbody></table>';
+      } else html += '<p style="color:var(--muted)">Veri yok.</p>';
+
+      // Recent
+      html += '<h3>Son 100 İstek</h3>';
+      if (x.recent && x.recent.length) {
+        html += '<div style="max-height:480px;overflow-y:auto;border:1px solid #eee;border-radius:8px"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead style="position:sticky;top:0;background:#fafafa"><tr>' +
+          '<th style="text-align:left;border-bottom:2px solid #eee;padding:8px">Zaman</th>' +
+          '<th style="text-align:left;border-bottom:2px solid #eee;padding:8px">IP</th>' +
+          '<th style="text-align:left;border-bottom:2px solid #eee;padding:8px">Path</th>' +
+          '<th style="text-align:right;border-bottom:2px solid #eee;padding:8px">Status</th>' +
+          '<th style="text-align:center;border-bottom:2px solid #eee;padding:8px">Tip</th>' +
+          '<th style="text-align:left;border-bottom:2px solid #eee;padding:8px">UA (kısaltılmış)</th>' +
+          '</tr></thead><tbody>';
+        x.recent.forEach(r => {
+          const tag = r.js_verified ? '✓ İNSAN' : r.is_bot ? '🤖 BOT' : 'İNSAN?';
+          const color = r.js_verified ? '#2e7d32' : r.is_bot ? '#c62828' : '#1565c0';
+          html += \`<tr><td style="padding:5px 8px;border-bottom:1px solid #f5f5f5;font-family:monospace;white-space:nowrap">\${fmtTs(r.ts)}</td><td style="padding:5px 8px;border-bottom:1px solid #f5f5f5;font-family:monospace">\${escHtml(r.ip)}</td><td style="padding:5px 8px;border-bottom:1px solid #f5f5f5;font-family:monospace;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${escHtml(r.path)}</td><td style="text-align:right;padding:5px 8px;border-bottom:1px solid #f5f5f5">\${r.status||'-'}</td><td style="text-align:center;padding:5px 8px;border-bottom:1px solid #f5f5f5;color:\${color};font-weight:600">\${tag}</td><td style="padding:5px 8px;border-bottom:1px solid #f5f5f5;font-size:11px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${escHtml(r.user_agent||'-')}</td></tr>\`;
+        });
+        html += '</tbody></table></div>';
+      } else html += '<p style="color:var(--muted)">Henüz istek yok.</p>';
+
+      c.innerHTML = html;
+    })
+    .catch(e => { c.innerHTML = '<span style="color:red">Bağlantı hatası: ' + e.message + '</span>'; });
+}
+
+function resetTraffic() {
+  if (!confirm('TÜM trafik verileri (yerel SQLite + merkezi PostgreSQL) silinecek. Bu işlem geri alınamaz! Devam edilsin mi?')) return;
+  if (!confirm('SON UYARI: Tüm pageview ve ziyaretçi kayıtları sıfırlanacak.')) return;
+  fetch('/admin/api/reset-traffic', { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) { alert('✓ Tüm trafik verileri sıfırlandı.'); loadTraffic('all'); }
+      else alert('Hata: ' + (d.error || 'bilinmeyen'));
+    })
+    .catch(e => alert('Bağlantı hatası: ' + e.message));
+}
 
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {

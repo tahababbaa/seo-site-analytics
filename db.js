@@ -64,15 +64,54 @@ function init() {
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL
         );
-        -- Migration: add faq_section_enabled if column missing
+        CREATE TABLE IF NOT EXISTS requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts DATETIME DEFAULT CURRENT_TIMESTAMP,
+            ip TEXT NOT NULL,
+            method TEXT,
+            path TEXT,
+            status INTEGER,
+            user_agent TEXT,
+            referer TEXT,
+            accept_lang TEXT,
+            host TEXT,
+            is_bot INTEGER DEFAULT 0,
+            bot_reason TEXT,
+            session_id TEXT,
+            js_verified INTEGER DEFAULT 0,
+            response_time_ms INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_requests_ts ON requests(ts);
+        CREATE INDEX IF NOT EXISTS idx_requests_ip ON requests(ip);
+        CREATE INDEX IF NOT EXISTS idx_requests_session ON requests(session_id);
+        CREATE INDEX IF NOT EXISTS idx_requests_bot ON requests(is_bot);
+        CREATE TABLE IF NOT EXISTS visitors (
+            session_id TEXT PRIMARY KEY,
+            ip TEXT,
+            user_agent TEXT,
+            first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+            request_count INTEGER DEFAULT 1,
+            is_bot INTEGER DEFAULT 0,
+            bot_reason TEXT,
+            js_verified INTEGER DEFAULT 0,
+            verified_at DATETIME,
+            referer TEXT,
+            country TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_visitors_first ON visitors(first_seen);
+        CREATE INDEX IF NOT EXISTS idx_visitors_ip ON visitors(ip);
         PRAGMA foreign_keys = OFF;
     `);
 
     // Migrate: add new meta keys without full re-seed
     migrateNewMeta();
 
-    const count = db.prepare('SELECT COUNT(*) as c FROM meta').get().c;
-    if (count === 0) seed();
+    // Check if core data exists to determine if we need to full seed
+    const hasCoreData = db.prepare("SELECT COUNT(*) as c FROM meta WHERE key = 'site_title'").get().c;
+    if (hasCoreData === 0) {
+        seed();
+    }
 
     // Ensure FAQ is seeded
     const faqCount = db.prepare('SELECT COUNT(*) as c FROM faq_items').get().c;
@@ -333,4 +372,12 @@ function seed() {
         .forEach(([p,id,n]) => sbcInsert.run(p,id,n));
 }
 
-module.exports = { db, init };
+function resetTracking() {
+    db.transaction(() => {
+        db.prepare('DELETE FROM requests').run();
+        db.prepare('DELETE FROM visitors').run();
+        db.prepare("DELETE FROM sqlite_sequence WHERE name IN ('requests')").run();
+    })();
+}
+
+module.exports = { db, init, resetTracking };
