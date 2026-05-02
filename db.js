@@ -213,7 +213,7 @@ function seed() {
         schema_org_altname: 'Türk İfşa, Türk Liseli İfşa, Türk Ünlü İfşa, Fenomen İfşa, Ünlü İfşa, Liseli İfşa, Amatör Porn, Türk İfşa Telegram',
         schema_org_url: 'https://www.indiedevday.es/',
         schema_org_logo: 'https://www.indiedevday.es/logo.png',
-        google_site_verify: 'JCdoRPaFyqIZ-iEhlWdjKZC6yusis3QMesTHximREoc',
+        google_site_verify: '',
         cf_beacon_src: 'https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516',
         cf_beacon_integrity: 'sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==',
         cf_beacon_token: '00cb8e637a88471985dfa8abc826e4c1',
