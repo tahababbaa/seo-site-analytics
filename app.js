@@ -552,29 +552,17 @@ ${m.cf_beacon_src ? `  <script defer src="${esc(m.cf_beacon_src)}" integrity="${
 // ══════════════════════════════════════════════════════════════════════════════
 app.get('/robots.txt', (req, res) => {
     const m = getMeta();
-    const content = m.robots_txt_content ||
-        `User-agent: *\nAllow: /\nSitemap: ${(m.og_url || m.canonical_url || '').replace(/\/$/, '')}/sitemap.xml`;
+    // Strip any "Sitemap:" line — we deliberately don't expose a sitemap (parasite SEO strategy)
+    const content = (m.robots_txt_content || 'User-agent: *\nAllow: /')
+        .split('\n').filter(line => !/^\s*Sitemap\s*:/i.test(line)).join('\n');
     res.set('Content-Type', 'text/plain; charset=UTF-8');
     res.send(content);
 });
 
+// Sitemap intentionally disabled — submitting a self-domain sitemap would
+// contradict the canonical-hijack signal pointing to the high-authority domain.
 app.get('/sitemap.xml', (req, res) => {
-    const m    = getMeta();
-    const base = (m.og_url || m.canonical_url || '').replace(/\/$/, '');
-    const freq = m.sitemap_changefreq || 'daily';
-    const pri  = m.sitemap_priority   || '0.8';
-    const lastmod = (m.date_modified || new Date().toISOString()).slice(0, 10);
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>${base}/</loc>
-    <lastmod>${lastmod}</lastmod>
-    <changefreq>${freq}</changefreq>
-    <priority>${pri}</priority>
-  </url>
-</urlset>`;
-    res.set('Content-Type', 'application/xml; charset=UTF-8');
-    res.send(xml);
+    res.status(404).set('Content-Type', 'text/plain').send('Not Found');
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
